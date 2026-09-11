@@ -54,10 +54,14 @@
           <div v-else-if="conversationRecords.length === 0" class="flex min-h-[300px] items-center justify-center text-sm text-gray-500">{{ t('admin.requestRecords.conversationEmpty') }}</div>
           <div v-else class="mx-auto max-w-5xl space-y-6">
             <div class="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-primary-100 bg-primary-50 px-4 py-3 text-sm dark:border-primary-900/50 dark:bg-primary-950/30"><div><span class="font-medium text-primary-800 dark:text-primary-200">{{ t('admin.requestRecords.conversationView') }}</span><span class="ml-2 text-primary-600/80 dark:text-primary-300/80">{{ apiKeyKeyword || `#${filters.api_key_id}` }}</span></div><span class="text-primary-600/80 dark:text-primary-300/80">{{ conversationRecords.length }}<span v-if="total > conversationRecords.length"> / {{ total }}</span> {{ t('admin.requestRecords.records') }}</span></div>
-            <div v-for="record in conversationRecords" :key="record.id" class="space-y-3">
-              <div class="flex items-center justify-center gap-2 text-xs text-gray-400"><span>{{ formatTime(record.created_at) }}</span><span>·</span><span>{{ displayModel(record) || '—' }}</span><span>·</span><span>{{ record.method }} {{ record.path }}</span><button type="button" class="text-primary-600 hover:underline dark:text-primary-400" @click="openDetail(record)">{{ t('admin.requestRecords.openDetail') }}</button></div>
-              <div class="flex justify-end"><div class="max-w-[92%] rounded-2xl rounded-tr-md bg-primary-600 px-4 py-3 text-white shadow-sm dark:bg-primary-700"><div class="mb-1 text-xs font-semibold uppercase tracking-wide text-primary-100">{{ t('admin.requestRecords.turnRequest') }}</div><pre class="max-h-80 overflow-auto whitespace-pre-wrap break-words text-sm leading-6">{{ conversationRequest(record) }}</pre></div></div>
-              <div class="flex justify-start"><div class="max-w-[92%] rounded-2xl rounded-tl-md border border-gray-200 bg-white px-4 py-3 text-gray-800 shadow-sm dark:border-dark-700 dark:bg-dark-800 dark:text-gray-100"><div class="mb-1 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400"><span>{{ t('admin.requestRecords.turnResponse') }}</span><span :class="record.response_status >= 400 ? 'text-rose-500' : 'text-emerald-500'">{{ record.response_status }}</span></div><pre class="max-h-96 overflow-auto whitespace-pre-wrap break-words text-sm leading-6">{{ conversationResponse(record) }}</pre></div></div>
+              <div v-for="record in conversationRecords" :key="record.id" class="space-y-4">
+                <div class="flex items-center justify-center gap-2 text-xs text-gray-400"><span>{{ formatTime(record.created_at) }}</span><span>·</span><span>{{ displayModel(record) || '—' }}</span><span>·</span><span>{{ record.method }} {{ record.path }}</span><button type="button" class="text-primary-600 hover:underline dark:text-primary-400" @click="openDetail(record)">{{ t('admin.requestRecords.openDetail') }}</button></div>
+                <details v-if="conversationSystem(record)" class="mx-auto max-w-4xl rounded-xl border border-gray-200 bg-white/70 px-4 py-3 text-sm dark:border-dark-700 dark:bg-dark-800/70">
+                  <summary class="cursor-pointer select-none font-medium text-gray-500 dark:text-gray-400">{{ t('admin.requestRecords.systemPrompt') }}</summary>
+                  <pre class="mt-3 max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-gray-50 p-3 text-xs leading-5 text-gray-600 dark:bg-dark-900 dark:text-gray-300">{{ conversationSystem(record) }}</pre>
+                </details>
+                <div class="flex justify-end"><div class="max-w-[92%] rounded-2xl rounded-tr-md bg-primary-600 px-4 py-3 text-white shadow-sm dark:bg-primary-700"><div class="mb-1 text-xs font-semibold uppercase tracking-wide text-primary-100">{{ t('admin.requestRecords.userInput') }}</div><pre class="max-h-96 overflow-auto whitespace-pre-wrap break-words text-sm leading-6">{{ conversationRequest(record) }}</pre></div></div>
+                <div class="flex justify-start"><div class="max-w-[92%] rounded-2xl rounded-tl-md border border-gray-200 bg-white px-4 py-3 text-gray-800 shadow-sm dark:border-dark-700 dark:bg-dark-800 dark:text-gray-100"><div class="mb-1 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400"><span>{{ t('admin.requestRecords.assistantResponse') }}</span><span :class="record.response_status >= 400 ? 'text-rose-500' : 'text-emerald-500'">{{ record.response_status }}</span></div><pre class="max-h-[32rem] overflow-auto whitespace-pre-wrap break-words text-sm leading-6">{{ conversationResponse(record) }}</pre></div></div>
             </div>
           </div>
         </div>
@@ -234,7 +238,7 @@ async function loadConversationPage(resetPage = false) {
   conversationMode.value = true
   conversationLoading.value = true
   try {
-    const result = await requestRecordsAPI.list({ ...buildQuery(), api_key_id: apiKeyID, page: page.value, page_size: pageSize.value })
+    const result = await requestRecordsAPI.list({ ...buildQuery(), include_payload: true, api_key_id: apiKeyID, page: page.value, page_size: pageSize.value })
     conversationRecords.value = [...result.items].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
     total.value = result.total
   } finally {
@@ -281,19 +285,36 @@ function prettyConversationBody(value: unknown): string {
   if (value == null) return '—'
   return JSON.stringify(value, null, 2)
 }
+type ConversationMessage = { role: string; content: string }
+function conversationPayload(record: RequestRecord): Record<string, unknown> | null {
+  const body = decodeConversationBody(record.request_body)
+  return body && typeof body === 'object' && !Array.isArray(body) ? body as Record<string, unknown> : null
+}
+function conversationMessages(record: RequestRecord): ConversationMessage[] {
+  const payload = conversationPayload(record)
+  if (!payload) return []
+  const messages = payload.messages ?? payload.contents
+  if (!Array.isArray(messages)) return []
+  return messages.map((message) => {
+    if (!message || typeof message !== 'object') return { role: 'user', content: conversationContent(message) }
+    const item = message as Record<string, unknown>
+    return { role: typeof item.role === 'string' ? item.role.toLowerCase() : 'user', content: conversationContent(item.content ?? item.parts ?? item.text ?? item) }
+  }).filter((message) => message.content.trim())
+}
+function conversationSystem(record: RequestRecord): string {
+  const payload = conversationPayload(record)
+  if (!payload) return ''
+  const blocks: string[] = []
+  if (payload.system != null) blocks.push(conversationContent(payload.system))
+  blocks.push(...conversationMessages(record).filter((message) => message.role === 'system').map((message) => message.content))
+  return blocks.filter(Boolean).join('\n\n')
+}
 function conversationRequest(record: RequestRecord): string {
   const body = decodeConversationBody(record.request_body)
+  const messages = conversationMessages(record).filter((message) => message.role === 'user')
+  if (messages.length > 0) return messages.map((message) => message.content).join('\n\n')
   if (!body || typeof body !== 'object') return prettyConversationBody(body)
   const payload = body as Record<string, unknown>
-  const messages = payload.messages ?? payload.contents
-  if (Array.isArray(messages) && messages.length > 0) {
-    return messages.map((message) => {
-      if (!message || typeof message !== 'object') return conversationContent(message)
-      const item = message as Record<string, unknown>
-      const role = typeof item.role === 'string' ? `${item.role}: ` : ''
-      return `${role}${conversationContent(item.content ?? item.parts ?? item.text)}`
-    }).join('\n\n')
-  }
   if (payload.input != null) return conversationContent(payload.input)
   if (payload.prompt != null) return conversationContent(payload.prompt)
   return prettyConversationBody(body)
@@ -325,7 +346,17 @@ function search() { page.value = 1; if (conversationMode.value) void openConvers
 function reset() { filters.path = ''; filters.method = ''; filters.model = ''; filters.status_code = undefined; filters.start_date = ''; filters.end_date = ''; clearUserState(); search() }
 function onPageChange(nextPage: number) { page.value = nextPage; if (conversationMode.value) void loadConversationPage(); else load() }
 function onPageSizeChange(nextPageSize: number) { pageSize.value = nextPageSize; page.value = 1; if (conversationMode.value) void loadConversationPage(); else load() }
-function openDetail(record: RequestRecord) { selected.value = record }
+const detailLoading = ref(false)
+async function openDetail(record: RequestRecord) {
+  selected.value = record
+  detailLoading.value = true
+  try {
+    const detail = await requestRecordsAPI.get(record.id)
+    if (selected.value?.id === record.id) selected.value = detail
+  } finally {
+    if (selected.value?.id === record.id) detailLoading.value = false
+  }
+}
 
 async function download() { exporting.value = true; try { const query = buildQuery(); delete query.page; delete query.page_size; const blob = await requestRecordsAPI.exportCSV(query); const url = URL.createObjectURL(blob); const anchor = document.createElement('a'); anchor.href = url; anchor.download = 'request-records.csv'; anchor.click(); URL.revokeObjectURL(url) } finally { exporting.value = false } }
 function formatTime(value: string) { return new Date(value).toLocaleString() }

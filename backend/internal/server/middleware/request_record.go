@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -115,6 +117,11 @@ func captureRequestRecordWithLimit(c *gin.Context, records *service.RequestRecor
 	if model == "" {
 		model = strings.TrimSpace(c.Query("model"))
 	}
+	stream := isStreamRequest(requestBody) || strings.Contains(strings.ToLower(recorder.Header().Get("Content-Type")), "text/event-stream")
+	responseBody := recorder.capturedBody()
+	if stream {
+		responseBody = compactStreamResponse(responseBody)
+	}
 	record := &service.RequestRecord{
 		RequestID:           strings.TrimSpace(requestID),
 		ClientRequestID:     strings.TrimSpace(clientRequestID),
@@ -131,15 +138,277 @@ func captureRequestRecordWithLimit(c *gin.Context, records *service.RequestRecor
 		RequestContentType:  c.GetHeader("Content-Type"),
 		ResponseStatus:      status,
 		ResponseHeaders:     responseHeaders,
-		ResponseBody:        recorder.capturedBody(),
+		ResponseBody:        responseBody,
 		ResponseContentType: recorder.Header().Get("Content-Type"),
-		Stream:              isStreamRequest(requestBody) || strings.Contains(strings.ToLower(recorder.Header().Get("Content-Type")), "text/event-stream"),
+		Stream:              stream,
 		UserAgent:           c.Request.UserAgent(),
 		IPAddress:           c.ClientIP(),
 		DurationMs:          time.Since(started).Milliseconds(),
 		CreatedAt:           started,
 	}
 	records.RecordAsync(record)
+}
+
+// compactStreamResponse turns a potentially very large SSE transcript into a
+// single final response object. The wire stream remains untouched for the
+// caller; only the copy persisted to request_records is compacted.
+func compactStreamResponse(body []byte) []byte {
+	if len(body) == 0 {
+		return body
+	}
+	var (
+		lastPayload    map[string]any
+		terminal       map[string]any
+		openAI         = newOpenAIStreamAccumulator()
+		anthropic      = newAnthropicStreamAccumulator()
+		genericText    strings.Builder
+		parsedPayloads int
+	)
+	for _, frame := range strings.Split(strings.ReplaceAll(strings.ReplaceAll(string(body), "\r\n", "\n"), "\r", "\n"), "\n\n") {
+		data := sseFrameData(frame)
+		if data == "" || data == "[DONE]" {
+			continue
+		}
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(data), &payload); err != nil {
+			continue
+		}
+		parsedPayloads++
+		lastPayload = payload
+		eventType := strings.ToLower(stringValue(payload["type"]))
+		if strings.Contains(eventType, "failed") || strings.Contains(eventType, "error") ||
+			eventType == "response.completed" || eventType == "response.done" || eventType == "message_stop" {
+			terminal = payload
+		}
+		openAI.add(payload)
+		anthropic.add(payload)
+		if delta := stringValue(payload["delta"]); delta != "" && strings.Contains(eventType, "output_text") {
+			genericText.WriteString(delta)
+		}
+	}
+	if parsedPayloads == 0 {
+		return body
+	}
+	if terminal != nil {
+		eventType := strings.ToLower(stringValue(terminal["type"]))
+		if eventType == "response.completed" || eventType == "response.done" {
+			if response, ok := terminal["response"].(map[string]any); ok && len(response) > 0 {
+				return marshalStreamPayload(response, body)
+			}
+		}
+		if strings.Contains(eventType, "failed") || strings.Contains(eventType, "error") {
+			return marshalStreamPayload(terminal, body)
+		}
+	}
+	if result, ok := openAI.result(); ok {
+		return marshalStreamPayload(result, body)
+	}
+	if result, ok := anthropic.result(); ok {
+		return marshalStreamPayload(result, body)
+	}
+	if genericText.Len() > 0 {
+		return marshalStreamPayload(map[string]any{"output_text": genericText.String()}, body)
+	}
+	if lastPayload != nil {
+		return marshalStreamPayload(lastPayload, body)
+	}
+	return body
+}
+
+func sseFrameData(frame string) string {
+	var data []string
+	for _, line := range strings.Split(frame, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "data:") {
+			value := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			if value != "" {
+				data = append(data, value)
+			}
+		}
+	}
+	return strings.Join(data, "\n")
+}
+
+func marshalStreamPayload(payload map[string]any, fallback []byte) []byte {
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return fallback
+	}
+	return encoded
+}
+
+func stringValue(value any) string {
+	if text, ok := value.(string); ok {
+		return text
+	}
+	return ""
+}
+
+type openAIStreamChoice struct {
+	index        int
+	role         string
+	content      strings.Builder
+	finishReason any
+	seen         bool
+}
+
+type openAIStreamAccumulator struct {
+	base    map[string]any
+	choices map[int]*openAIStreamChoice
+	usage   any
+}
+
+func newOpenAIStreamAccumulator() *openAIStreamAccumulator {
+	return &openAIStreamAccumulator{base: make(map[string]any), choices: make(map[int]*openAIStreamChoice)}
+}
+
+func (a *openAIStreamAccumulator) add(payload map[string]any) {
+	choices, ok := payload["choices"].([]any)
+	if !ok {
+		return
+	}
+	for _, raw := range choices {
+		choice, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		index := int(numberValue(choice["index"]))
+		item := a.choices[index]
+		if item == nil {
+			item = &openAIStreamChoice{index: index}
+			a.choices[index] = item
+		}
+		item.seen = true
+		if delta, ok := choice["delta"].(map[string]any); ok {
+			if role := stringValue(delta["role"]); role != "" {
+				item.role = role
+			}
+			if content := stringValue(delta["content"]); content != "" {
+				item.content.WriteString(content)
+			}
+		} else if message, ok := choice["message"].(map[string]any); ok {
+			if role := stringValue(message["role"]); role != "" {
+				item.role = role
+			}
+			if content := stringValue(message["content"]); content != "" {
+				item.content.WriteString(content)
+			}
+		}
+		if reason, exists := choice["finish_reason"]; exists && reason != nil {
+			item.finishReason = reason
+		}
+	}
+	for _, key := range []string{"id", "object", "created", "model", "system_fingerprint"} {
+		if value, exists := payload[key]; exists && a.base[key] == nil {
+			a.base[key] = value
+		}
+	}
+	if usage, exists := payload["usage"]; exists {
+		a.usage = usage
+	}
+}
+
+func (a *openAIStreamAccumulator) result() (map[string]any, bool) {
+	if len(a.choices) == 0 {
+		return nil, false
+	}
+	indices := make([]int, 0, len(a.choices))
+	for index := range a.choices {
+		indices = append(indices, index)
+	}
+	sort.Ints(indices)
+	result := make(map[string]any, len(a.base)+2)
+	for key, value := range a.base {
+		if key == "object" {
+			if object, ok := value.(string); ok {
+				value = strings.TrimSuffix(object, ".chunk")
+			}
+		}
+		result[key] = value
+	}
+	items := make([]any, 0, len(indices))
+	for _, index := range indices {
+		choice := a.choices[index]
+		message := map[string]any{"role": choice.role, "content": choice.content.String()}
+		item := map[string]any{"index": choice.index, "message": message}
+		if choice.finishReason != nil {
+			item["finish_reason"] = choice.finishReason
+		}
+		items = append(items, item)
+	}
+	result["choices"] = items
+	if a.usage != nil {
+		result["usage"] = a.usage
+	}
+	return result, true
+}
+
+type anthropicStreamAccumulator struct {
+	message map[string]any
+	text    strings.Builder
+	usage   any
+	seen    bool
+}
+
+func newAnthropicStreamAccumulator() *anthropicStreamAccumulator {
+	return &anthropicStreamAccumulator{}
+}
+
+func (a *anthropicStreamAccumulator) add(payload map[string]any) {
+	eventType := strings.ToLower(stringValue(payload["type"]))
+	if eventType == "message_start" {
+		if message, ok := payload["message"].(map[string]any); ok {
+			a.message = message
+			a.seen = true
+		}
+		return
+	}
+	if eventType == "content_block_delta" {
+		if delta, ok := payload["delta"].(map[string]any); ok {
+			if text := stringValue(delta["text"]); text != "" {
+				a.text.WriteString(text)
+			}
+		}
+		return
+	}
+	if eventType == "message_delta" {
+		a.seen = true
+		if usage, ok := payload["usage"]; ok {
+			a.usage = usage
+		}
+		if delta, ok := payload["delta"].(map[string]any); ok && a.message != nil {
+			if reason, ok := delta["stop_reason"]; ok {
+				a.message["stop_reason"] = reason
+			}
+		}
+	}
+}
+
+func (a *anthropicStreamAccumulator) result() (map[string]any, bool) {
+	if !a.seen || a.message == nil || a.text.Len() == 0 {
+		return nil, false
+	}
+	result := make(map[string]any, len(a.message)+1)
+	for key, value := range a.message {
+		result[key] = value
+	}
+	result["content"] = []any{map[string]any{"type": "text", "text": a.text.String()}}
+	if a.usage != nil {
+		result["usage"] = a.usage
+	}
+	return result, true
+}
+
+func numberValue(value any) float64 {
+	switch number := value.(type) {
+	case float64:
+		return number
+	case json.Number:
+		parsed, _ := strconv.ParseFloat(string(number), 64)
+		return parsed
+	default:
+		return 0
+	}
 }
 
 func readAndRestoreBody(c *gin.Context, maxBodySize int64) ([]byte, error) {

@@ -43,6 +43,9 @@ export default {
     conversationEmpty: '该 API 密钥暂无请求记录',
     turnRequest: '请求',
     turnResponse: '响应',
+    systemPrompt: '系统提示词（默认收起）',
+    userInput: '用户输入',
+    assistantResponse: 'Codex 响应',
     openDetail: '查看原始详情'
   }
 }

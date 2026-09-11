@@ -62,18 +62,22 @@ type RequestRecordReference struct {
 }
 
 type RequestRecordFilter struct {
-	Page       int
-	PageSize   int
-	RequestID  string
-	Method     string
-	Path       string
-	Model      string
-	StatusCode *int
-	UserID     *int64
-	APIKeyID   *int64
-	GroupID    *int64
-	StartTime  *time.Time
-	EndTime    *time.Time
+	Page     int
+	PageSize int
+	// IncludePayload asks the list query to include headers and bodies. The
+	// regular admin list leaves these large fields out; detail, conversation,
+	// and export views opt in explicitly.
+	IncludePayload bool
+	RequestID      string
+	Method         string
+	Path           string
+	Model          string
+	StatusCode     *int
+	UserID         *int64
+	APIKeyID       *int64
+	GroupID        *int64
+	StartTime      *time.Time
+	EndTime        *time.Time
 }
 
 type RequestRecordPage struct {

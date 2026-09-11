@@ -43,6 +43,9 @@ export default {
     conversationEmpty: 'No request records for this API key',
     turnRequest: 'Request',
     turnResponse: 'Response',
+    systemPrompt: 'System prompt (collapsed by default)',
+    userInput: 'User input',
+    assistantResponse: 'Codex response',
     openDetail: 'View raw detail'
   }
 }

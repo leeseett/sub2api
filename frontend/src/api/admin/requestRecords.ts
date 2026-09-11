@@ -52,6 +52,7 @@ export interface RequestRecordReference {
 export interface RequestRecordQuery {
   page?: number
   page_size?: number
+  include_payload?: boolean
   request_id?: string
   method?: string
   path?: string

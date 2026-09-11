@@ -26,6 +26,16 @@ const requestRecordColumns = `
  rr.stream, rr.user_agent, rr.ip_address, rr.duration_ms, rr.created_at,
  u.email, u.username, u.deleted_at, ak.name, a.name, grp.name`
 
+// requestRecordSummaryColumns deliberately excludes the potentially large
+// headers and bodies. The admin list only needs metadata; GetByID and the
+// explicit payload views still use requestRecordColumns.
+const requestRecordSummaryColumns = `
+ rr.id, rr.request_id, rr.client_request_id, rr.user_id, rr.api_key_id, rr.account_id, rr.group_id,
+ rr.model, rr.method, rr.path, rr.query_string, rr.request_content_type,
+ rr.response_status, rr.response_content_type, rr.stream, rr.user_agent, rr.ip_address,
+ rr.duration_ms, rr.created_at,
+ u.email, u.username, u.deleted_at, ak.name, a.name, grp.name`
+
 const requestRecordFromSQL = `
  request_records rr
  LEFT JOIN users u ON u.id = rr.user_id
@@ -132,14 +142,24 @@ func (r *requestRecordRepository) List(ctx context.Context, filter service.Reque
 		return nil, err
 	}
 	args = append(args, pageSize, (page-1)*pageSize)
-	rows, err := r.db.QueryContext(ctx, `SELECT`+requestRecordColumns+` FROM`+requestRecordFromSQL+whereSQL+` ORDER BY rr.created_at DESC, rr.id DESC LIMIT $`+fmt.Sprint(len(args)-1)+` OFFSET $`+fmt.Sprint(len(args)), args...)
+	columns := requestRecordSummaryColumns
+	if filter.IncludePayload {
+		columns = requestRecordColumns
+	}
+	rows, err := r.db.QueryContext(ctx, `SELECT`+columns+` FROM`+requestRecordFromSQL+whereSQL+` ORDER BY rr.created_at DESC, rr.id DESC LIMIT $`+fmt.Sprint(len(args)-1)+` OFFSET $`+fmt.Sprint(len(args)), args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	items := make([]*service.RequestRecord, 0)
 	for rows.Next() {
-		item, scanErr := scanRequestRecord(rows)
+		var item *service.RequestRecord
+		var scanErr error
+		if filter.IncludePayload {
+			item, scanErr = scanRequestRecord(rows)
+		} else {
+			item, scanErr = scanRequestRecordSummary(rows)
+		}
 		if scanErr != nil {
 			return nil, scanErr
 		}
@@ -149,6 +169,32 @@ func (r *requestRecordRepository) List(ctx context.Context, filter service.Reque
 		return nil, err
 	}
 	return &service.RequestRecordPage{Items: items, Total: total, Page: page, PageSize: pageSize}, nil
+}
+
+func scanRequestRecordSummary(row rowScanner) (*service.RequestRecord, error) {
+	var (
+		record                                                  service.RequestRecord
+		requestID, clientRequestID                              sql.NullString
+		userID, apiKeyID, accountID, groupID                    sql.NullInt64
+		model, queryString, requestContentType                  sql.NullString
+		userAgent, ipAddress, responseContentType               sql.NullString
+		userEmail, username, apiKeyName, accountName, groupName sql.NullString
+		userDeletedAt                                           sql.NullTime
+	)
+	err := row.Scan(
+		&record.ID, &requestID, &clientRequestID, &userID, &apiKeyID, &accountID, &groupID,
+		&model, &record.Method, &record.Path, &queryString, &requestContentType,
+		&record.ResponseStatus, &responseContentType, &record.Stream, &userAgent, &ipAddress,
+		&record.DurationMs, &record.CreatedAt,
+		&userEmail, &username, &userDeletedAt, &apiKeyName, &accountName, &groupName,
+	)
+	if err != nil {
+		return nil, err
+	}
+	populateRequestRecordReferences(&record, requestID, clientRequestID, userID, apiKeyID, accountID, groupID,
+		model, queryString, requestContentType, userAgent, ipAddress, responseContentType,
+		userEmail, username, userDeletedAt, apiKeyName, accountName, groupName)
+	return &record, nil
 }
 
 func scanRequestRecord(row rowScanner) (*service.RequestRecord, error) {
@@ -173,14 +219,26 @@ func scanRequestRecord(row rowScanner) (*service.RequestRecord, error) {
 	if err != nil {
 		return nil, err
 	}
+	record.RequestHeaders = normalizeHeaders(requestHeaders)
+	record.ResponseHeaders = normalizeHeaders(responseHeaders)
+	record.RequestBody, record.ResponseBody = append([]byte(nil), requestBody...), append([]byte(nil), responseBody...)
+	populateRequestRecordReferences(&record, requestID, clientRequestID, userID, apiKeyID, accountID, groupID,
+		model, queryString, requestContentType, userAgent, ipAddress, responseContentType,
+		userEmail, username, userDeletedAt, apiKeyName, accountName, groupName)
+	return &record, nil
+}
+
+func populateRequestRecordReferences(record *service.RequestRecord, requestID, clientRequestID sql.NullString,
+	userID, apiKeyID, accountID, groupID sql.NullInt64, model, queryString, requestContentType,
+	userAgent, ipAddress, responseContentType, userEmail, username sql.NullString, userDeletedAt sql.NullTime,
+	apiKeyName, accountName, groupName sql.NullString) {
 	record.RequestID, record.ClientRequestID = requestID.String, clientRequestID.String
 	record.Model = model.String
 	record.QueryString, record.RequestContentType = queryString.String, requestContentType.String
 	record.ResponseContentType = responseContentType.String
 	record.UserAgent, record.IPAddress = userAgent.String, ipAddress.String
-	record.RequestHeaders = normalizeHeaders(requestHeaders)
-	record.ResponseHeaders = normalizeHeaders(responseHeaders)
-	record.RequestBody, record.ResponseBody = append([]byte(nil), requestBody...), append([]byte(nil), responseBody...)
+	record.RequestHeaders = normalizeHeaders(record.RequestHeaders)
+	record.ResponseHeaders = normalizeHeaders(record.ResponseHeaders)
 	record.UserID = nullableInt64Ptr(userID)
 	record.APIKeyID = nullableInt64Ptr(apiKeyID)
 	record.AccountID = nullableInt64Ptr(accountID)
@@ -203,7 +261,6 @@ func scanRequestRecord(row rowScanner) (*service.RequestRecord, error) {
 	if groupID.Valid && groupName.Valid {
 		record.Group = &service.RequestRecordReference{ID: groupID.Int64, Name: groupName.String}
 	}
-	return &record, nil
 }
 
 func normalizeHeaders(value []byte) []byte {

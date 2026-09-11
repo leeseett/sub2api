@@ -76,6 +76,7 @@ func (h *RequestRecordHandler) Export(c *gin.Context) {
 	}
 	filter.Page = 1
 	filter.PageSize = 5000
+	filter.IncludePayload = true
 	c.Header("Content-Type", "text/csv; charset=utf-8")
 	c.Header("Content-Disposition", `attachment; filename="request-records.csv"`)
 	w := csv.NewWriter(c.Writer)
@@ -109,12 +110,20 @@ func (h *RequestRecordHandler) Export(c *gin.Context) {
 func parseRequestRecordFilter(c *gin.Context) (service.RequestRecordFilter, error) {
 	page, pageSize := response.ParsePagination(c)
 	filter := service.RequestRecordFilter{
-		Page:      page,
-		PageSize:  pageSize,
-		RequestID: strings.TrimSpace(c.Query("request_id")),
-		Method:    strings.TrimSpace(c.Query("method")),
-		Path:      strings.TrimSpace(c.Query("path")),
-		Model:     strings.TrimSpace(c.Query("model")),
+		Page:           page,
+		PageSize:       pageSize,
+		IncludePayload: false,
+		RequestID:      strings.TrimSpace(c.Query("request_id")),
+		Method:         strings.TrimSpace(c.Query("method")),
+		Path:           strings.TrimSpace(c.Query("path")),
+		Model:          strings.TrimSpace(c.Query("model")),
+	}
+	if raw := strings.TrimSpace(c.Query("include_payload")); raw != "" {
+		value, err := strconv.ParseBool(raw)
+		if err != nil {
+			return filter, invalidFilter("include_payload")
+		}
+		filter.IncludePayload = value
 	}
 	for name, target := range map[string]**int64{
 		"user_id":    &filter.UserID,
