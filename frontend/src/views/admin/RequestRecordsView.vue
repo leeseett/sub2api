@@ -258,7 +258,7 @@ async function loadConversationPage(resetPage = false) {
   }
   conversationMode.value = true
   try {
-    const result = await requestRecordsAPI.list({ ...buildQuery(), include_payload: true, api_key_id: apiKeyID, page: requestedPage, page_size: conversationPageSize })
+    const result = await requestRecordsAPI.list({ ...buildQuery(), conversation_only: true, api_key_id: apiKeyID, page: requestedPage, page_size: conversationPageSize })
     if (sequence !== conversationLoadSequence) return
     const items = [...result.items].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
     if (resetPage) conversationRecords.value = items
@@ -341,6 +341,7 @@ function conversationMessages(record: RequestRecord): ConversationMessage[] {
   }).filter((message) => message.content.trim())
 }
 function conversationSystem(record: RequestRecord): string {
+  if (record.conversation_system != null) return record.conversation_system
   const payload = conversationPayload(record)
   if (!payload) return ''
   const blocks: string[] = []
@@ -349,6 +350,7 @@ function conversationSystem(record: RequestRecord): string {
   return blocks.filter(Boolean).join('\n\n')
 }
 function conversationRequest(record: RequestRecord): string {
+  if (record.conversation_request != null) return record.conversation_request || '—'
   const body = decodeConversationBody(record.request_body)
   const messages = conversationMessages(record).filter((message) => message.role === 'user')
   if (messages.length > 0) return messages.map((message) => message.content).join('\n\n')
@@ -359,6 +361,7 @@ function conversationRequest(record: RequestRecord): string {
   return prettyConversationBody(body)
 }
 function conversationResponse(record: RequestRecord): string {
+  if (record.conversation_response != null) return record.conversation_response || '—'
   const body = decodeConversationBody(record.response_body)
   if (!body || typeof body !== 'object') return prettyConversationBody(body)
   const payload = body as Record<string, unknown>

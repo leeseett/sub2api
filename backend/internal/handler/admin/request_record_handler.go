@@ -125,6 +125,16 @@ func parseRequestRecordFilter(c *gin.Context) (service.RequestRecordFilter, erro
 		}
 		filter.IncludePayload = value
 	}
+	if raw := strings.TrimSpace(c.Query("conversation_only")); raw != "" {
+		value, err := strconv.ParseBool(raw)
+		if err != nil {
+			return filter, invalidFilter("conversation_only")
+		}
+		filter.ConversationOnly = value
+		if value {
+			filter.IncludePayload = true
+		}
+	}
 	for name, target := range map[string]**int64{
 		"user_id":    &filter.UserID,
 		"api_key_id": &filter.APIKeyID,

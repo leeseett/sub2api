@@ -15,6 +15,9 @@ export interface RequestRecord {
   query_string?: string
   request_headers: Record<string, string[]>
   request_body?: string
+  conversation_system?: string
+  conversation_request?: string
+  conversation_response?: string
   request_content_type?: string
   response_status: number
   response_headers: Record<string, string[]>
@@ -53,6 +56,7 @@ export interface RequestRecordQuery {
   page?: number
   page_size?: number
   include_payload?: boolean
+  conversation_only?: boolean
   request_id?: string
   method?: string
   path?: string

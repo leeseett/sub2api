@@ -143,7 +143,7 @@ func (r *requestRecordRepository) List(ctx context.Context, filter service.Reque
 	}
 	args = append(args, pageSize, (page-1)*pageSize)
 	columns := requestRecordSummaryColumns
-	if filter.IncludePayload {
+	if filter.IncludePayload || filter.ConversationOnly {
 		columns = requestRecordColumns
 	}
 	rows, err := r.db.QueryContext(ctx, `SELECT`+columns+` FROM`+requestRecordFromSQL+whereSQL+` ORDER BY rr.created_at DESC, rr.id DESC LIMIT $`+fmt.Sprint(len(args)-1)+` OFFSET $`+fmt.Sprint(len(args)), args...)
@@ -155,7 +155,7 @@ func (r *requestRecordRepository) List(ctx context.Context, filter service.Reque
 	for rows.Next() {
 		var item *service.RequestRecord
 		var scanErr error
-		if filter.IncludePayload {
+		if filter.IncludePayload || filter.ConversationOnly {
 			item, scanErr = scanRequestRecord(rows)
 		} else {
 			item, scanErr = scanRequestRecordSummary(rows)
