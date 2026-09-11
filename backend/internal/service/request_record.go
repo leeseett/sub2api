@@ -183,6 +183,9 @@ func conversationRequestParts(body []byte) (string, string) {
 	if value, exists := object["system"]; exists {
 		system = append(system, conversationValueText(value))
 	}
+	if value, exists := object["instructions"]; exists {
+		system = append(system, conversationValueText(value))
+	}
 	var user []string
 	if messages, ok := object["messages"].([]any); ok {
 		for _, value := range messages {
@@ -192,7 +195,7 @@ func conversationRequestParts(body []byte) (string, string) {
 			}
 			role := strings.ToLower(conversationStringValue(message["role"]))
 			content := conversationValueText(firstConversationValue(message, "content", "parts", "text"))
-			if role == "system" {
+			if role == "system" || role == "developer" {
 				system = append(system, content)
 			} else if role == "user" || role == "" {
 				user = append(user, content)
@@ -214,7 +217,22 @@ func conversationRequestParts(body []byte) (string, string) {
 			}
 		}
 	}
-	if len(user) == 0 {
+	if input, ok := object["input"].([]any); ok {
+		for _, value := range input {
+			message, ok := value.(map[string]any)
+			if !ok {
+				user = append(user, conversationValueText(value))
+				continue
+			}
+			role := strings.ToLower(conversationStringValue(message["role"]))
+			content := conversationValueText(firstConversationValue(message, "content", "parts", "text"))
+			if role == "system" || role == "developer" {
+				system = append(system, content)
+			} else if role == "user" || role == "" {
+				user = append(user, content)
+			}
+		}
+	} else if len(user) == 0 {
 		for _, key := range []string{"input", "prompt"} {
 			if value, exists := object[key]; exists {
 				user = append(user, conversationValueText(value))

@@ -22,3 +22,9 @@ func TestCompactRequestRecordConversationDropsRawPayloads(t *testing.T) {
 	require.Nil(t, record.RequestHeaders)
 	require.Nil(t, record.ResponseHeaders)
 }
+
+func TestConversationRequestPartsSeparatesResponsesInstructions(t *testing.T) {
+	system, user := conversationRequestParts([]byte(`{"instructions":"system rules","input":[{"role":"developer","content":"developer rules"},{"role":"user","content":"hello"}]}`))
+	require.Equal(t, "system rules\n\ndeveloper rules", system)
+	require.Equal(t, "hello", user)
+}
