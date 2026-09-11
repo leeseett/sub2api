@@ -65,7 +65,7 @@
             </div>
           </div>
         </div>
-        <Pagination v-if="conversationMode && total > 0" :total="total" :page="page" :page-size="pageSize" @update:page="onPageChange" @update:page-size="onPageSizeChange" />
+        <Pagination v-if="conversationMode && total > 0" :total="total" :page="page" :page-size="conversationPageSize" :page-size-options="[5, 10, 20]" @update:page="onPageChange" @update:page-size="onPageSizeChange" />
       </div>
 
       <BaseDialog v-if="selected" :show="true" :title="detailTitle" width="full" close-on-click-outside @close="selected = null">
@@ -96,6 +96,9 @@ const loading = ref(false)
 const exporting = ref(false)
 const page = ref(1)
 const pageSize = ref(50)
+// Full payloads are needed for the conversation bubbles, so keep this page
+// deliberately small. The regular table can still use a larger page size.
+const conversationPageSize = ref(10)
 const total = ref(0)
 const filters = reactive<RequestRecordQuery & { start_date: string; end_date: string }>({ path: '', method: '', model: '', status_code: undefined, user_id: undefined, api_key_id: undefined, start_date: '', end_date: '' })
 const userSearchRef = ref<HTMLElement | null>(null)
@@ -238,7 +241,7 @@ async function loadConversationPage(resetPage = false) {
   conversationMode.value = true
   conversationLoading.value = true
   try {
-    const result = await requestRecordsAPI.list({ ...buildQuery(), include_payload: true, api_key_id: apiKeyID, page: page.value, page_size: pageSize.value })
+    const result = await requestRecordsAPI.list({ ...buildQuery(), include_payload: true, api_key_id: apiKeyID, page: page.value, page_size: conversationPageSize.value })
     conversationRecords.value = [...result.items].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
     total.value = result.total
   } finally {
@@ -345,7 +348,7 @@ async function load() { loading.value = true; try { const result = await request
 function search() { page.value = 1; if (conversationMode.value) void openConversation(); else load() }
 function reset() { filters.path = ''; filters.method = ''; filters.model = ''; filters.status_code = undefined; filters.start_date = ''; filters.end_date = ''; clearUserState(); search() }
 function onPageChange(nextPage: number) { page.value = nextPage; if (conversationMode.value) void loadConversationPage(); else load() }
-function onPageSizeChange(nextPageSize: number) { pageSize.value = nextPageSize; page.value = 1; if (conversationMode.value) void loadConversationPage(); else load() }
+function onPageSizeChange(nextPageSize: number) { if (conversationMode.value) conversationPageSize.value = nextPageSize; else pageSize.value = nextPageSize; page.value = 1; if (conversationMode.value) void loadConversationPage(); else load() }
 const detailLoading = ref(false)
 async function openDetail(record: RequestRecord) {
   selected.value = record
