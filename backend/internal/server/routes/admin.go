@@ -94,6 +94,9 @@ func RegisterAdminRoutes(
 		// 使用记录管理
 		registerUsageRoutes(admin, h)
 
+		// 完整请求记录（与使用记录分离）
+		registerRequestRecordRoutes(admin, h)
+
 		// 用户属性管理
 		registerUserAttributeRoutes(admin, h)
 
@@ -130,6 +133,15 @@ func RegisterAdminRoutes(
 
 		// 操作审计日志
 		registerAuditLogRoutes(admin, h, stepUpAuth)
+	}
+}
+
+func registerRequestRecordRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	records := admin.Group("/request-records")
+	{
+		records.GET("", h.Admin.RequestRecord.List)
+		records.GET("/export", h.Admin.RequestRecord.Export)
+		records.GET("/:id", h.Admin.RequestRecord.Get)
 	}
 }
 
