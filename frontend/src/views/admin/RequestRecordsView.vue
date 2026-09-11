@@ -49,10 +49,12 @@
 
         <Pagination v-if="!conversationMode && total > 0" :total="total" :page="page" :page-size="pageSize" @update:page="onPageChange" @update:page-size="onPageSizeChange" />
 
-        <div v-else class="min-h-[360px] bg-gray-50/60 p-4 dark:bg-dark-900/30 sm:p-6">
+        <div v-else ref="conversationScrollRef" class="max-h-[calc(100vh-22rem)] min-h-[360px] overflow-y-auto bg-gray-50/60 p-4 dark:bg-dark-900/30 sm:p-6" @scroll.passive="handleConversationScroll">
           <div v-if="conversationLoading" class="flex min-h-[300px] items-center justify-center text-sm text-gray-500">{{ t('admin.requestRecords.conversationLoading') }}</div>
           <div v-else-if="conversationRecords.length === 0" class="flex min-h-[300px] items-center justify-center text-sm text-gray-500">{{ t('admin.requestRecords.conversationEmpty') }}</div>
           <div v-else class="mx-auto max-w-5xl space-y-6">
+            <div v-if="conversationLoadingMore" class="py-2 text-center text-xs text-gray-500 dark:text-gray-400">{{ t('admin.requestRecords.loadingEarlier') }}</div>
+            <div v-else-if="!conversationHasMore" class="py-2 text-center text-xs text-gray-400 dark:text-gray-500">{{ t('admin.requestRecords.allHistoryLoaded') }}</div>
             <div class="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-primary-100 bg-primary-50 px-4 py-3 text-sm dark:border-primary-900/50 dark:bg-primary-950/30"><div><span class="font-medium text-primary-800 dark:text-primary-200">{{ t('admin.requestRecords.conversationView') }}</span><span class="ml-2 text-primary-600/80 dark:text-primary-300/80">{{ apiKeyKeyword || `#${filters.api_key_id}` }}</span></div><span class="text-primary-600/80 dark:text-primary-300/80">{{ conversationRecords.length }}<span v-if="total > conversationRecords.length"> / {{ total }}</span> {{ t('admin.requestRecords.records') }}</span></div>
               <div v-for="record in conversationRecords" :key="record.id" class="space-y-4">
                 <div class="flex items-center justify-center gap-2 text-xs text-gray-400"><span>{{ formatTime(record.created_at) }}</span><span>·</span><span>{{ displayModel(record) || '—' }}</span><span>·</span><span>{{ record.method }} {{ record.path }}</span><button type="button" class="text-primary-600 hover:underline dark:text-primary-400" @click="openDetail(record)">{{ t('admin.requestRecords.openDetail') }}</button></div>
@@ -65,7 +67,6 @@
             </div>
           </div>
         </div>
-        <Pagination v-if="conversationMode && total > 0" :total="total" :page="page" :page-size="conversationPageSize" :page-size-options="[5, 10, 20]" @update:page="onPageChange" @update:page-size="onPageSizeChange" />
       </div>
 
       <BaseDialog v-if="selected" :show="true" :title="detailTitle" width="full" close-on-click-outside @close="selected = null">
@@ -79,7 +80,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import BaseDialog from '@/components/common/BaseDialog.vue'
@@ -96,9 +97,9 @@ const loading = ref(false)
 const exporting = ref(false)
 const page = ref(1)
 const pageSize = ref(50)
-// Full payloads are needed for the conversation bubbles, so keep this page
-// deliberately small. The regular table can still use a larger page size.
-const conversationPageSize = ref(10)
+// Full payloads are needed for the conversation bubbles, so load a small
+// newest-first page and fetch older pages when the scroll reaches the top.
+const conversationPageSize = 10
 const total = ref(0)
 const filters = reactive<RequestRecordQuery & { start_date: string; end_date: string }>({ path: '', method: '', model: '', status_code: undefined, user_id: undefined, api_key_id: undefined, start_date: '', end_date: '' })
 const userSearchRef = ref<HTMLElement | null>(null)
@@ -111,7 +112,12 @@ const apiKeyResults = ref<SimpleApiKey[]>([])
 const showApiKeyDropdown = ref(false)
 const conversationMode = ref(false)
 const conversationLoading = ref(false)
+const conversationLoadingMore = ref(false)
 const conversationRecords = ref<RequestRecord[]>([])
+const conversationScrollRef = ref<HTMLElement | null>(null)
+const conversationNextPage = ref(1)
+const conversationHasMore = ref(true)
+let conversationLoadSequence = 0
 let userSearchTimeout: ReturnType<typeof setTimeout> | null = null
 let apiKeySearchTimeout: ReturnType<typeof setTimeout> | null = null
 
@@ -237,16 +243,46 @@ const clearApiKey = () => {
 async function loadConversationPage(resetPage = false) {
   const apiKeyID = filters.api_key_id
   if (!apiKeyID) return
-  if (resetPage) page.value = 1
-  conversationMode.value = true
-  conversationLoading.value = true
-  try {
-    const result = await requestRecordsAPI.list({ ...buildQuery(), include_payload: true, api_key_id: apiKeyID, page: page.value, page_size: conversationPageSize.value })
-    conversationRecords.value = [...result.items].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
-    total.value = result.total
-  } finally {
-    conversationLoading.value = false
+  if (!resetPage && (conversationLoading.value || conversationLoadingMore.value || !conversationHasMore.value)) return
+  const requestedPage = resetPage ? 1 : conversationNextPage.value
+  const scrollElement = !resetPage ? conversationScrollRef.value : null
+  const previousScrollHeight = scrollElement?.scrollHeight ?? 0
+  const previousScrollTop = scrollElement?.scrollTop ?? 0
+  const sequence = ++conversationLoadSequence
+  if (resetPage) {
+    page.value = 1
+    conversationHasMore.value = true
+    conversationLoading.value = true
+  } else {
+    conversationLoadingMore.value = true
   }
+  conversationMode.value = true
+  try {
+    const result = await requestRecordsAPI.list({ ...buildQuery(), include_payload: true, api_key_id: apiKeyID, page: requestedPage, page_size: conversationPageSize })
+    if (sequence !== conversationLoadSequence) return
+    const items = [...result.items].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+    if (resetPage) conversationRecords.value = items
+    else conversationRecords.value = [...items, ...conversationRecords.value]
+    total.value = result.total
+    conversationNextPage.value = requestedPage + 1
+    conversationHasMore.value = conversationRecords.value.length < result.total
+    if (resetPage) {
+      await nextTick()
+      if (conversationScrollRef.value) conversationScrollRef.value.scrollTop = conversationScrollRef.value.scrollHeight
+    } else if (scrollElement) {
+      await nextTick()
+      scrollElement.scrollTop = previousScrollTop + scrollElement.scrollHeight - previousScrollHeight
+    }
+  } finally {
+    if (sequence === conversationLoadSequence) {
+      conversationLoading.value = false
+      conversationLoadingMore.value = false
+    }
+  }
+}
+async function handleConversationScroll(event: Event) {
+  const target = event.currentTarget as HTMLElement | null
+  if (target && target.scrollTop <= 80) await loadConversationPage(false)
 }
 async function openConversation() {
   await loadConversationPage(true)
@@ -347,8 +383,8 @@ const buildQuery = (): RequestRecordQuery => ({ page: page.value, page_size: pag
 async function load() { loading.value = true; try { const result = await requestRecordsAPI.list(buildQuery()); records.value = result.items; total.value = result.total } finally { loading.value = false } }
 function search() { page.value = 1; if (conversationMode.value) void openConversation(); else load() }
 function reset() { filters.path = ''; filters.method = ''; filters.model = ''; filters.status_code = undefined; filters.start_date = ''; filters.end_date = ''; clearUserState(); search() }
-function onPageChange(nextPage: number) { page.value = nextPage; if (conversationMode.value) void loadConversationPage(); else load() }
-function onPageSizeChange(nextPageSize: number) { if (conversationMode.value) conversationPageSize.value = nextPageSize; else pageSize.value = nextPageSize; page.value = 1; if (conversationMode.value) void loadConversationPage(); else load() }
+function onPageChange(nextPage: number) { page.value = nextPage; load() }
+function onPageSizeChange(nextPageSize: number) { pageSize.value = nextPageSize; page.value = 1; load() }
 const detailLoading = ref(false)
 async function openDetail(record: RequestRecord) {
   selected.value = record

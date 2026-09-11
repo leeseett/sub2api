@@ -40,6 +40,8 @@ export default {
     conversationView: '对话视图',
     listView: '列表视图',
     conversationLoading: '正在加载对话…',
+    loadingEarlier: '正在加载更早的记录…',
+    allHistoryLoaded: '已加载全部历史记录',
     conversationEmpty: '该 API 密钥暂无请求记录',
     turnRequest: '请求',
     turnResponse: '响应',

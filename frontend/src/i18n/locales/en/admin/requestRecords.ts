@@ -40,6 +40,8 @@ export default {
     conversationView: 'Conversation view',
     listView: 'List view',
     conversationLoading: 'Loading conversation…',
+    loadingEarlier: 'Loading earlier records…',
+    allHistoryLoaded: 'All history loaded',
     conversationEmpty: 'No request records for this API key',
     turnRequest: 'Request',
     turnResponse: 'Response',
