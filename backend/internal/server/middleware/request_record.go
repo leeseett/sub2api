@@ -119,9 +119,6 @@ func captureRequestRecordWithLimit(c *gin.Context, records *service.RequestRecor
 	}
 	stream := isStreamRequest(requestBody) || strings.Contains(strings.ToLower(recorder.Header().Get("Content-Type")), "text/event-stream")
 	responseBody := recorder.capturedBody()
-	if stream {
-		responseBody = compactStreamResponse(responseBody)
-	}
 	record := &service.RequestRecord{
 		RequestID:           strings.TrimSpace(requestID),
 		ClientRequestID:     strings.TrimSpace(clientRequestID),
@@ -146,7 +143,16 @@ func captureRequestRecordWithLimit(c *gin.Context, records *service.RequestRecor
 		DurationMs:          time.Since(started).Milliseconds(),
 		CreatedAt:           started,
 	}
-	records.RecordAsync(record)
+	if stream {
+		// Compact only after the response has left the gateway. The wire bytes
+		// have already been captured, so this preserves the final-result-only
+		// storage policy without putting SSE parsing on the user request path.
+		records.RecordAsync(record, func(record *service.RequestRecord) {
+			record.ResponseBody = compactStreamResponse(record.ResponseBody)
+		})
+	} else {
+		records.RecordAsync(record)
+	}
 }
 
 // compactStreamResponse turns a potentially very large SSE transcript into a

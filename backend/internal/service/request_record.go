@@ -118,13 +118,21 @@ func (s *RequestRecordService) Record(ctx context.Context, record *RequestRecord
 // RecordAsync keeps gateway response latency independent of the export store.
 // The short timeout prevents a stalled database from retaining request data
 // forever during shutdown or a transient database outage.
-func (s *RequestRecordService) RecordAsync(record *RequestRecord) {
+// RecordAsync persists a record in the background. Optional prepare callbacks
+// run inside the background goroutine, which keeps post-response processing
+// (for example compacting a streamed response) off the gateway request path.
+func (s *RequestRecordService) RecordAsync(record *RequestRecord, prepare ...func(*RequestRecord)) {
 	if s == nil || s.repo == nil || record == nil {
 		return
 	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+		for _, fn := range prepare {
+			if fn != nil {
+				fn(record)
+			}
+		}
 		_ = s.Record(ctx, record)
 	}()
 }
